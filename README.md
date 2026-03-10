@@ -1,134 +1,134 @@
 # weather-dbus-service
-A D-Bus microservice demonstrating REST API → D-Bus → Client  pipeline using Python (pydbus, GLib). Reference implementation  for embedded Linux IPC patterns.
 
-# Weather D-Bus Application
-## REST API → D-Bus → Clients (Python / pydbus)
+A D-Bus microservice demonstrating a **REST API → D-Bus → Client** pipeline using Python (`pydbus`, `GLib`). Reference implementation for embedded Linux IPC patterns.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│              OpenWeatherMap REST API                │
-│         http://api.openweathermap.org               │
-└────────────────────┬────────────────────────────────┘
-                     │ HTTP GET (requests library)
-                     ▼
-┌─────────────────────────────────────────────────────┐
-│             WeatherFetcher (REST Layer)             │
-│  weather_fetcher.py                                 │
-│  - fetch(city) → WeatherData dataclass              │
-│  - Error handling (HTTP, Timeout, Parse)            │
-└────────────────────┬────────────────────────────────┘
-                     │ WeatherData object
-                     ▼
-┌─────────────────────────────────────────────────────┐
-│           WeatherService (D-Bus Server)             │
-│  weather_service.py                                 │
-│                                                     │
-│  Bus  : Session Bus                                 │
-│  Name : com.weather.Service                         │
-│  Path : /com/weather/Service                        │
-│                                                     │
-│  PROPERTIES (read-only):                            │
-│    Temperature, Humidity, City,                     │
-│    LastUpdated, Description, WindSpeed              │
-│                                                     │
-│  METHODS:                                           │
-│    GetWeather(city) → a{sv}  [on-demand]            │
-│                                                     │
-│  SIGNALS:                                           │
-│    WeatherUpdated(city, temp, humidity, desc)       │
-│    PropertiesChanged (standard D-Bus)               │
-│                                                     │
-│  POLLING:                                           │
-│    GLib.timeout_add_seconds(60, _poll)              │
-│    _poll() → fetches + emits signal                 │
-└────────────────────┬────────────────────────────────┘
-                     │ Session D-Bus (IPC)
-          ┌──────────┴──────────┐
-          ▼                     ▼
-┌──────────────────┐   ┌──────────────────────────┐
-│  weather_client  │   │  Any other D-Bus client  │
-│  (Python)        │   │  (C++, JS, dbus-send...) │
-│                  │   │                          │
-│  1. Read Props   │   │                          │
-│  2. Call Methods │   │                          │
-│  3. Subscribe    │   │                          │
-│     Signals      │   │                          │
-└──────────────────┘   └──────────────────────────┘
+OpenWeatherMap REST API  (or Mock)
+        │
+        ▼
+WeatherFetcher           (REST layer — SRP)
+        │
+        ▼
+WeatherService           (D-Bus Server)
+  ├── Properties   →  Temperature, Humidity, City, LastUpdated
+  ├── Methods      →  GetWeather(city) → dict
+  └── Signals      →  WeatherUpdated, PropertiesChanged
+        │
+        │  Session Bus: com.weather.Service
+        ▼
+WeatherClient            (D-Bus Client)
+  ├── Read Properties
+  ├── Call Methods
+  └── Subscribe Signals
 ```
 
 ---
 
-## D-Bus Concepts Used
+## D-Bus Interface
 
-| Concept | What it does | Where in code |
-|---|---|---|
-| **Service Name** | Unique bus name (`com.weather.Service`) | `config.py` |
-| **Object Path** | Address of object (`/com/weather/Service`) | `config.py` |
-| **Interface** | Contract definition (XML introspection) | `dbus = """..."""` in service |
-| **Property** | State variable, readable by clients | `@property` + XML `<property>` |
-| **Method** | RPC call from client to server | Python method + XML `<method>` |
-| **Signal** | Server → clients async broadcast | `signal()` descriptor |
-| **GLib.MainLoop** | Event loop for D-Bus message processing | Both service & client |
-| **timeout_add_seconds** | GLib timer for periodic polling | `weather_service.py` |
-| **PropertiesChanged** | Standard signal when properties change | `self.PropertiesChanged(...)` |
+| Type       | Name             | Signature       | Description                        |
+|------------|------------------|-----------------|------------------------------------|
+| Property   | `Temperature`    | `d` (double)    | Current temperature in °C          |
+| Property   | `Humidity`       | `i` (int32)     | Current humidity in %              |
+| Property   | `City`           | `s` (string)    | Monitored city name                |
+| Property   | `LastUpdated`    | `s` (string)    | Last poll timestamp                |
+| Property   | `Description`    | `s` (string)    | Weather description                |
+| Property   | `WindSpeed`      | `d` (double)    | Wind speed                         |
+| Method     | `GetWeather`     | `s → a{sv}`     | On-demand fetch for any city       |
+| Signal     | `WeatherUpdated` | `s, d, i, s`    | Emitted on every poll cycle        |
 
 ---
 
-## D-Bus Type System (a{sv} explained)
+## Project Structure
 
 ```
-a{sv}  =  Array of {String : Variant}  =  Python dict
-
-GLib.Variant("s", "London")   → D-Bus string
-GLib.Variant("d", 23.5)       → D-Bus double (float)
-GLib.Variant("i", 65)         → D-Bus int32
-
-Why variants? Because D-Bus is strongly typed — a{sv} lets
-you return mixed types in one dict (like JSON objects).
+weather-dbus-service/
+├── config.py            # API keys, D-Bus names, constants
+├── weather_fetcher.py   # REST API layer (SRP — HTTP only)
+├── weather_service.py   # D-Bus server (Properties + Methods + Signals)
+├── weather_client.py    # D-Bus client (read + call + subscribe)
+├── requirements.txt     # Python dependencies
+└── README.md
 ```
 
 ---
 
-## Setup & Run
+## Prerequisites
 
-### 1. Install dependencies
+### System Dependencies
 ```bash
-sudo apt install python3-gi python3-gi-cairo gir1.2-glib-2.0
-pip install pydbus requests
+sudo apt install python3-gi python3-gi-cairo \
+  gir1.2-glib-2.0 dbus-tools
 ```
 
-### 2. Get API Key
-- Register at: https://openweathermap.org/api
-- Free tier: 60 calls/minute, 1M calls/month
-- Edit `config.py` → set `OWM_API_KEY`
+### Python Dependencies
+```bash
+pip install -r requirements.txt
+```
 
-### 3. Run the service (Terminal 1)
+---
+
+## Configuration
+
+Edit `config.py`:
+
+```python
+# Option 1: OpenWeatherMap (free tier — register at openweathermap.org)
+OWM_API_KEY = "your_api_key_here"
+
+# Option 2: Mock fetcher (no internet required — default)
+# weather_fetcher.py already uses mock data out of the box
+```
+
+---
+
+## Usage
+
+### Terminal 1 — Start the D-Bus Service
 ```bash
 python3 weather_service.py
 ```
 
-### 4. Run the client (Terminal 2)
+Expected output:
+```
+2026-03-10 12:00:00 [INFO] WeatherService published on: com.weather.Service
+2026-03-10 12:00:00 [INFO] Polling every 10s for city: London
+2026-03-10 12:00:00 [INFO] [Poll] Updated → London: 23.5°C, 65%, 'Cloudy'
+```
+
+### Terminal 2 — Run the Client
 ```bash
 python3 weather_client.py
 ```
 
-### 5. Debug with dbus-send (Terminal 3)
+Expected output:
+```
+--- [1] Reading D-Bus Properties ---
+  City        : London
+  Temperature : 23.5°C
+  Humidity    : 65%
+
+--- [2] Calling GetWeather('Mumbai') Method ---
+  Temperature : 34.1°C
+  Humidity    : 87%
+
+--- [3] Subscribing to WeatherUpdated signal ---
+  Waiting for next poll cycle...
+
+========================================
+  📡 [SIGNAL] WeatherUpdated received!
+  🌍 City       : London
+  🌡️  Temperature: 24.0°C
+  💧 Humidity   : 63%
+========================================
+```
+
+### Terminal 3 — Debug with dbus-send
 ```bash
-# List all services on session bus
-dbus-send --session --print-reply --dest=org.freedesktop.DBus \
-  /org/freedesktop/DBus org.freedesktop.DBus.ListNames
-
-# Call GetWeather method
-dbus-send --session --print-reply \
-  --dest=com.weather.Service \
-  /com/weather/Service \
-  com.weather.Service.GetWeather \
-  string:"Delhi"
-
 # Read a property
 dbus-send --session --print-reply \
   --dest=com.weather.Service \
@@ -137,30 +137,67 @@ dbus-send --session --print-reply \
   string:"com.weather.Service" \
   string:"Temperature"
 
+# Call GetWeather method
+dbus-send --session --print-reply \
+  --dest=com.weather.Service \
+  /com/weather/Service \
+  com.weather.Service.GetWeather \
+  string:"Delhi"
+
 # Monitor all signals
 dbus-monitor --session "type='signal',interface='com.weather.Service'"
 ```
 
 ---
 
-## Key Learning Points
+## Key D-Bus Concepts Demonstrated
 
-1. **pydbus XML introspection** — `dbus = """..."""` class attribute defines the D-Bus contract
-2. **pydbus.generic.signal()** — descriptor that makes `self.Signal(args)` emit on D-Bus
-3. **GLib.MainLoop** — mandatory for D-Bus; without it, signals never arrive
-4. **GLib.timeout_add_seconds** — non-blocking timer; returns True to repeat
-5. **PropertiesChanged** — standard D-Bus pattern; clients can monitor property changes without custom signals
-6. **a{sv} variants** — typed heterogeneous dict; standard pattern for method return values
+| Concept                  | Implementation                          |
+|--------------------------|-----------------------------------------|
+| Introspection XML        | `dbus = """..."""` class attribute      |
+| Properties               | `@property` + XML `<property>` tag      |
+| EmitsChangedSignal       | Annotation in XML + `PropertiesChanged` |
+| Custom Signal            | `signal()` descriptor + emit            |
+| Method (RPC)             | Python method + XML `<method>` tag      |
+| GLib MainLoop            | `GLib.MainLoop().run()` — both sides    |
+| Periodic Polling         | `GLib.timeout_add_seconds()`            |
+| D-Bus Variant Type       | `GLib.Variant('d', value)`              |
 
 ---
 
-## Files
+## D-Bus Type Signatures Used
 
-```
-weather_dbus/
-├── config.py           — API keys, D-Bus names, constants
-├── weather_fetcher.py  — REST API layer (SRP: only HTTP)
-├── weather_service.py  — D-Bus server (Properties + Methods + Signals)
-├── weather_client.py   — D-Bus client (read + call + subscribe)
-└── README.md           — This file
-```
+| Signature | Type              | Example                        |
+|-----------|-------------------|--------------------------------|
+| `s`       | String            | City name                      |
+| `d`       | Double            | Temperature (23.5)             |
+| `i`       | Int32             | Humidity (65)                  |
+| `a{sv}`   | Dict<String, Var> | Method return value            |
+
+---
+
+## Relation to SPM Architecture
+
+This project is a **reference implementation** for the `com.safran.SatelliteModemManager` D-Bus architecture:
+
+| Weather Project          | SPM Project                              |
+|--------------------------|------------------------------------------|
+| `com.weather.Service`    | `com.safran.SatelliteModemManager`       |
+| `Temperature`, `Humidity`| `SNR`, `LinkQuality`, `ModCod`           |
+| `GetWeather(city)`       | `GetModemStats(modem_id)`                |
+| `WeatherUpdated` signal  | `ModCodChanged`, `ModemFaultDetected`    |
+| `GLib.timeout_add_seconds` | Same polling pattern                   |
+
+---
+
+## Author
+
+**Ashutosh Kumar Tiwari**  
+Engineer II — Connectivity & Embedded Systems  
+SESI, Bangalore  
+
+---
+
+## License
+
+MIT License — see [LICENSE](LICENSE)
