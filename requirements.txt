@@ -1,0 +1,8 @@
+# D-Bus
+pydbus>=0.6.0
+
+# HTTP (only needed for real API — not mock)
+requests>=2.28.0
+
+# GLib/GObject — install via apt, not pip:
+# sudo apt install python3-gi python3-gi-cairo gir1.2-glib-2.0
